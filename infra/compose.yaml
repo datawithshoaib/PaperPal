@@ -1,0 +1,67 @@
+# Full stack: Postgres, Redis, Chroma server, API, Celery worker, web.
+#   docker compose -f infra/compose.yaml --env-file .env up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: paperpal
+      POSTGRES_USER: paperpal
+      POSTGRES_PASSWORD: paperpal
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperpal -d paperpal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  chroma:
+    image: chromadb/chroma:1.5.9
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes: ["chroma_data:/data"]
+  api: &backend
+    build: ../backend
+    env_file: ../.env
+    environment: &backend_env
+      DATABASE_URL: postgresql+asyncpg://paperpal:paperpal@db:5432/paperpal
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      UPLOAD_DIR: /data/uploads
+      FRONTEND_ORIGIN: http://localhost:3000
+    command: ["sh", "-c", "alembic upgrade head && uvicorn paperpal.main:app --host 0.0.0.0 --port 8000"]
+    volumes: ["paper_files:/data/uploads", "model_cache:/root/.cache"]
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      chroma: {condition: service_started}
+  worker:
+    <<: *backend
+    ports: []
+    command: ["celery", "-A", "paperpal.workers.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+  web:
+    build:
+      context: ../apps/web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
+  paper_files:
+  model_cache:

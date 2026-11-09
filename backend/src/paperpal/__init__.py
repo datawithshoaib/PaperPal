@@ -1,0 +1,1 @@
+"""PaperPal research assistant backend."""
